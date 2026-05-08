@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+mysqlclient
+pydantic-settings
+celery
+redis
+ffmpeg-python
+python-multipart

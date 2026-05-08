@@ -1,0 +1,104 @@
+Phase 1: The Finalized Tech Stack
+Frontend: Next.js (React) or Vue.js (for reactive state management during long waits).
+
+Backend Core: FastAPI (Python) – Perfect for async operations and WebSockets.
+
+Task Queue: Celery + Redis – Essential for managing long-running generation and FFmpeg tasks.
+
+Database: PostgreSQL – For robust relational data (Users, Credits, Jobs).
+
+Storage: AWS S3 (or Google Cloud Storage) – To host the final stitched video files.
+
+Video Model: Veo (via Google Cloud) or Runway Gen-3 API.
+
+Video Processing: FFmpeg (via ffmpeg-python) – For stitching together video chunks on the backend.
+
+Phase 2: Database Schema (High-Level)
+To support this system, your PostgreSQL database needs two primary tables to start:
+
+1. users Table
+
+id (UUID)
+
+email (String)
+
+credits_balance (Integer) - Deducted per second of video generated.
+
+2. video_jobs Table
+
+id (UUID) - The job ID returned to the frontend.
+
+user_id (Foreign Key)
+
+prompt (Text)
+
+requested_duration (Integer) - e.g., 30 seconds.
+
+status (Enum: PENDING, PROCESSING, STITCHING, COMPLETED, FAILED)
+
+external_task_ids (JSON) - Array of task IDs from the video API for the chunks.
+
+s3_url (String) - Populated only when status is COMPLETED.
+
+Phase 3: Core API Endpoints (FastAPI)
+Your FastAPI server will expose the following crucial endpoints:
+
+POST /api/generate
+
+Input: prompt, duration
+
+Action: Authenticates user, checks credit balance, creates a video_job record, triggers the Celery worker, and deducts initial credits.
+
+Output: Returns { "job_id": "1234-abcd..." } immediately.
+
+GET /ws/jobs/{job_id} (WebSocket)
+
+Action: Opens a real-time connection with the frontend to stream status updates (PROCESSING -> STITCHING -> COMPLETED).
+
+POST /api/webhooks/video-provider
+
+Action: The endpoint the external Video API (e.g., Veo/Runway) calls when a chunk is done generating.
+
+Phase 4: The Background Pipeline (The "Engine")
+This is where your Celery worker shines. When a job is dispatched, the worker executes this flow:
+
+Calculate Chunks: If the user wants 20 seconds and the model limit is 5 seconds, the worker calculates that 4 chunks are needed.
+
+Generate Chunk 1: Sends the text prompt to the Video API, passing your FastAPI webhook URL. Worker sleeps.
+
+Webhook Trigger: The Video API hits your webhook. FastAPI tells the Celery worker to resume.
+
+Sequential Generation: The worker takes the last frame of Chunk 1 and sends it to the API as an image prompt alongside the text for Chunk 2. Repeats until all 4 chunks exist.
+
+The Stitching Phase:
+
+Worker updates DB status to STITCHING.
+
+Downloads all 4 .mp4 chunks to temporary local storage.
+
+Runs FFmpeg to seamlessly concatenate them.
+
+Delivery:
+
+Worker uploads the final 20-second .mp4 to AWS S3.
+
+Updates DB status to COMPLETED with the S3 URL.
+
+FastAPI pushes the S3 URL through the WebSocket to the user's screen.
+
+Deletes local temporary chunk files.
+
+Phase 5: Frontend & UX Strategy
+Because the user might wait 10+ minutes for a complex, multi-chunk video, the frontend must keep them engaged:
+
+The Studio: A clean interface to input the prompt and duration.
+
+The Waiting Room: Once they hit "Generate", transition them to a dashboard showing the progress. Use the WebSocket to update the UI:
+
+"Generating Part 1 of 4..."
+
+"Stitching video together..."
+
+"Ready!"
+
+Email Fallback: For requests over a certain duration, prompt the user: "You can close this tab. We will email you when your video is ready."
